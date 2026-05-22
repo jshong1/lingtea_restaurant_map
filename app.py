@@ -326,41 +326,12 @@ st.markdown("""
 # ─────────────────────────────────────────────
 # 5. 탭 구성
 # ─────────────────────────────────────────────
-if "active_tab" not in st.session_state:
-    st.session_state.active_tab = "🗺️ 지도 & 등록"
-
-# URL 쿼리 파라미터 처리 (지도 핀 클릭 리다이렉션)
-try:
-    q_params = st.query_params
-    if "restaurant_id" in q_params:
-        target_id = int(q_params["restaurant_id"])
-        st.session_state.active_tab = "⭐ 리뷰 & 평점"
-        st.session_state.selected_restaurant_id_from_map = target_id
-        st.query_params.clear()
-except Exception as e:
-    pass
-
-tab_names = ["🗺️ 지도 & 등록", "📋 맛집 목록", "⭐ 리뷰 & 평점", "🎰 오늘의 점심 룰렛"]
-
-t_cols = st.columns(4)
-for i, name in enumerate(tab_names):
-    with t_cols[i]:
-        is_active = (st.session_state.active_tab == name)
-        if st.button(
-            name, 
-            key=f"tab_btn_{i}", 
-            use_container_width=True, 
-            type="primary" if is_active else "secondary"
-        ):
-            st.session_state.active_tab = name
-            st.rerun()
-
-st.markdown("<div style='margin-bottom: 1rem;'></div>", unsafe_allow_html=True)
+tab_map, tab1, tab2, tab3 = st.tabs(["🗺️ 지도 & 등록", "📋 맛집 목록", "⭐ 리뷰 & 평점", "🎰 오늘의 점심 룰렛"])
 
 # ═══════════════════════════════════════════════
 # TAB MAP — 맛집 지도 & 등록
 # ═══════════════════════════════════════════════
-if st.session_state.active_tab == "🗺️ 지도 & 등록":
+with tab_map:
     col_map_form, col_map_view = st.columns([1, 2.5], gap="large")
     
     with col_map_form:
@@ -454,26 +425,7 @@ if st.session_state.active_tab == "🗺️ 지도 & 등록":
                         author_name = str(rv["author"]).replace('<', '&lt;').replace('>', '&gt;')
                         popup_html += f'<div style="margin-bottom: 6px; padding-bottom: 4px; border-bottom: 1px dashed #eee;"><b>{author_name}</b> ({rv["rating"]}점)<br>{comment}</div>'
                         
-                popup_html += f'''
-                    </div>
-                    <div style="margin-top: 10px; text-align: center;">
-                        <a href="#" onclick="
-                            var ref = document.referrer || (window.location.ancestorOrigins && window.location.ancestorOrigins[0]) || '/';
-                            var cleanUrl = ref.split('?')[0];
-                            if (cleanUrl.slice(-1) !== '/') cleanUrl += '/';
-                            this.href = cleanUrl + '?restaurant_id={row['id']}';
-                        " target="_top" style="
-                            display: inline-block;
-                            background-color: #FF6B35;
-                            color: white;
-                            padding: 6px 12px;
-                            border-radius: 8px;
-                            text-decoration: none;
-                            font-weight: bold;
-                            font-size: 12px;
-                            font-family: sans-serif;
-                            box-shadow: 0 2px 4px rgba(255,107,53,0.2);
-                        ">✍️ 리뷰 쓰러가기</a>
+                popup_html += '''
                     </div>
                 </div>
                 '''
@@ -491,7 +443,7 @@ if st.session_state.active_tab == "🗺️ 지도 & 등록":
 # ═══════════════════════════════════════════════
 # TAB 1 — 맛집 목록
 # ═══════════════════════════════════════════════
-if st.session_state.active_tab == "📋 맛집 목록":
+with tab1:
     st.markdown('<div class="section-title">📋 등록된 맛집 목록</div>', unsafe_allow_html=True)
 
     # 카테고리 필터
@@ -540,11 +492,11 @@ if st.session_state.active_tab == "📋 맛집 목록":
 # ═══════════════════════════════════════════════
 # TAB 2 — 리뷰 & 평점
 # ═══════════════════════════════════════════════
-if st.session_state.active_tab == "⭐ 리뷰 & 평점":
+with tab2:
     df_all = get_restaurants()
 
     if df_all.empty:
-        st.info("먼저 맛집을 등록해 주세요!")
+        st.info("먼저 Tab 1에서 맛집을 등록해 주세요!")
     else:
         st.markdown('<div class="section-title">🔍 식당 선택</div>', unsafe_allow_html=True)
         st.caption("아래 표에서 리뷰를 확인하거나 작성할 식당을 **클릭(선택)**하세요. (열 제목을 눌러 정렬할 수 있습니다)")
@@ -563,26 +515,12 @@ if st.session_state.active_tab == "⭐ 리뷰 & 평점":
             on_select="rerun"
         )
         
-        # 선택된 식당 ID 확인 로직 (지도 연결 우선 확인 후 클릭 이벤트 처리)
-        selected_id = None
-        if "selected_restaurant_id_from_map" in st.session_state and st.session_state.selected_restaurant_id_from_map is not None:
-            selected_id = st.session_state.selected_restaurant_id_from_map
-            
-        if event.selection.rows:
-            selected_idx = event.selection.rows[0]
-            selected_id  = int(df_display.iloc[selected_idx]["_id"])
-            # 유저가 직접 수동으로 선택했으므로 지도 연동 세션 정보는 초기화
-            if "selected_restaurant_id_from_map" in st.session_state:
-                st.session_state.selected_restaurant_id_from_map = None
-
-        if selected_id is None:
+        if not event.selection.rows:
             st.info("👆 위 표에서 식당을 하나 선택해 주세요!")
         else:
+            selected_idx = event.selection.rows[0]
+            selected_id  = int(df_display.iloc[selected_idx]["_id"])
             selected_row = df_all[df_all["id"] == selected_id].iloc[0]
-            
-            # 지도 연동으로 들어온 경우 안내 메시지 출력
-            if "selected_restaurant_id_from_map" in st.session_state and st.session_state.selected_restaurant_id_from_map == selected_id:
-                st.info(f"📍 지도에서 선택된 **{selected_row['name']}** 식당의 리뷰 페이지입니다. 다른 식당의 리뷰를 보려면 아래 목록에서 클릭하세요.")
             
             st.markdown(f"### 🍽️ {selected_row['name']}")
 
@@ -651,7 +589,7 @@ if st.session_state.active_tab == "⭐ 리뷰 & 평점":
 # ═══════════════════════════════════════════════
 # TAB 3 — 오늘의 점심 룰렛
 # ═══════════════════════════════════════════════
-if st.session_state.active_tab == "🎰 오늘의 점심 룰렛":
+with tab3:
     st.markdown("### 🎰 오늘 점심 뭐 먹을지 고민된다면?")
     st.caption("카테고리를 선택하고 룰렛을 돌려보세요!")
 
