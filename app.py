@@ -3,7 +3,7 @@
 실행 방법: streamlit run app.py
 """
 
-import sqlite3
+import psycopg2
 import random
 import pandas as pd
 import streamlit as st
@@ -189,40 +189,45 @@ html, body, [class*="css"] {
 # ─────────────────────────────────────────────
 # 2. DB 초기화 (테이블 생성)
 # ─────────────────────────────────────────────
-DB_PATH = "matzip.db"
-
 def get_conn():
-    return sqlite3.connect(DB_PATH, check_same_thread=False)
+    db_url = st.secrets.get("SUPABASE_DB_URL", "")
+    if not db_url or "[your-password]" in db_url:
+        st.error("🔑 .streamlit/secrets.toml 파일에 올바른 SUPABASE_DB_URL을 입력해 주세요.")
+        st.stop()
+    return psycopg2.connect(db_url)
 
 def init_db():
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS restaurants (
-            id        INTEGER PRIMARY KEY AUTOINCREMENT,
-            name      TEXT    NOT NULL,
-            category  TEXT    NOT NULL,
-            map_url   TEXT,
-            author    TEXT    NOT NULL,
-            created_at TEXT   NOT NULL,
-            address   TEXT,
-            lat       REAL,
-            lng       REAL
-        )
-    """)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS reviews (
-            id            INTEGER PRIMARY KEY AUTOINCREMENT,
-            restaurant_id INTEGER NOT NULL,
-            author        TEXT    NOT NULL,
-            rating        INTEGER NOT NULL,
-            comment       TEXT,
-            created_at    TEXT    NOT NULL,
-            FOREIGN KEY (restaurant_id) REFERENCES restaurants(id)
-        )
-    """)
-    conn.commit()
-    conn.close()
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS restaurants (
+                id         SERIAL PRIMARY KEY,
+                name       VARCHAR(255) NOT NULL,
+                category   VARCHAR(50) NOT NULL,
+                map_url    TEXT,
+                author     VARCHAR(100) NOT NULL,
+                created_at VARCHAR(50) NOT NULL,
+                address    TEXT,
+                lat        DOUBLE PRECISION,
+                lng        DOUBLE PRECISION
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS reviews (
+                id            SERIAL PRIMARY KEY,
+                restaurant_id INTEGER NOT NULL,
+                author        VARCHAR(100) NOT NULL,
+                rating        INTEGER NOT NULL,
+                comment       TEXT,
+                created_at    VARCHAR(50) NOT NULL,
+                FOREIGN KEY (restaurant_id) REFERENCES restaurants(id) ON DELETE CASCADE
+            )
+        """)
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        st.error(f"DB 초기화 중 오류가 발생했습니다: {e}")
 
 init_db()
 
@@ -243,18 +248,21 @@ def get_lat_lng(address):
 
 def add_restaurant(name, category, address, lat, lng, author):
     conn = get_conn()
-    conn.execute(
-        "INSERT INTO restaurants (name, category, address, lat, lng, author, created_at) VALUES (?,?,?,?,?,?,?)",
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO restaurants (name, category, address, lat, lng, author, created_at) VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id",
         (name, category, address, lat, lng, author, datetime.now().strftime("%Y-%m-%d %H:%M"))
     )
+    new_id = cursor.fetchone()[0]
     conn.commit()
     conn.close()
+    return new_id
 
 def get_restaurants(category_filter="전체"):
     conn = get_conn()
     if category_filter == "전체":
         df = pd.read_sql("""
-            SELECT r.*, ROUND(AVG(rv.rating),1) as avg_rating, COUNT(rv.id) as review_count
+            SELECT r.*, ROUND(AVG(rv.rating)::numeric,1) as avg_rating, COUNT(rv.id) as review_count
             FROM restaurants r
             LEFT JOIN reviews rv ON r.id = rv.restaurant_id
             GROUP BY r.id
@@ -262,10 +270,10 @@ def get_restaurants(category_filter="전체"):
         """, conn)
     else:
         df = pd.read_sql("""
-            SELECT r.*, ROUND(AVG(rv.rating),1) as avg_rating, COUNT(rv.id) as review_count
+            SELECT r.*, ROUND(AVG(rv.rating)::numeric,1) as avg_rating, COUNT(rv.id) as review_count
             FROM restaurants r
             LEFT JOIN reviews rv ON r.id = rv.restaurant_id
-            WHERE r.category = ?
+            WHERE r.category = %s
             GROUP BY r.id
             ORDER BY r.created_at DESC
         """, conn, params=(category_filter,))
@@ -274,8 +282,9 @@ def get_restaurants(category_filter="전체"):
 
 def add_review(restaurant_id, author, rating, comment):
     conn = get_conn()
-    conn.execute(
-        "INSERT INTO reviews (restaurant_id, author, rating, comment, created_at) VALUES (?,?,?,?,?)",
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO reviews (restaurant_id, author, rating, comment, created_at) VALUES (%s,%s,%s,%s,%s)",
         (restaurant_id, author, rating, comment, datetime.now().strftime("%Y-%m-%d %H:%M"))
     )
     conn.commit()
@@ -284,7 +293,7 @@ def add_review(restaurant_id, author, rating, comment):
 def get_reviews(restaurant_id):
     conn = get_conn()
     df = pd.read_sql(
-        "SELECT * FROM reviews WHERE restaurant_id=? ORDER BY created_at DESC",
+        "SELECT * FROM reviews WHERE restaurant_id=%s ORDER BY created_at DESC",
         conn, params=(restaurant_id,)
     )
     conn.close()
@@ -292,8 +301,9 @@ def get_reviews(restaurant_id):
 
 def delete_restaurant(restaurant_id):
     conn = get_conn()
-    conn.execute("DELETE FROM reviews WHERE restaurant_id=?", (restaurant_id,))
-    conn.execute("DELETE FROM restaurants WHERE id=?", (restaurant_id,))
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM reviews WHERE restaurant_id=%s", (restaurant_id,))
+    cursor.execute("DELETE FROM restaurants WHERE id=%s", (restaurant_id,))
     conn.commit()
     conn.close()
 
@@ -316,12 +326,41 @@ st.markdown("""
 # ─────────────────────────────────────────────
 # 5. 탭 구성
 # ─────────────────────────────────────────────
-tab_map, tab1, tab2, tab3 = st.tabs(["🗺️ 지도 & 등록", "📋 맛집 목록", "⭐ 리뷰 & 평점", "🎰 오늘의 점심 룰렛"])
+if "active_tab" not in st.session_state:
+    st.session_state.active_tab = "🗺️ 지도 & 등록"
+
+# URL 쿼리 파라미터 처리 (지도 핀 클릭 리다이렉션)
+try:
+    q_params = st.query_params
+    if "restaurant_id" in q_params:
+        target_id = int(q_params["restaurant_id"])
+        st.session_state.active_tab = "⭐ 리뷰 & 평점"
+        st.session_state.selected_restaurant_id_from_map = target_id
+        st.query_params.clear()
+except Exception as e:
+    pass
+
+tab_names = ["🗺️ 지도 & 등록", "📋 맛집 목록", "⭐ 리뷰 & 평점", "🎰 오늘의 점심 룰렛"]
+
+t_cols = st.columns(4)
+for i, name in enumerate(tab_names):
+    with t_cols[i]:
+        is_active = (st.session_state.active_tab == name)
+        if st.button(
+            name, 
+            key=f"tab_btn_{i}", 
+            use_container_width=True, 
+            type="primary" if is_active else "secondary"
+        ):
+            st.session_state.active_tab = name
+            st.rerun()
+
+st.markdown("<div style='margin-bottom: 1rem;'></div>", unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════════
 # TAB MAP — 맛집 지도 & 등록
 # ═══════════════════════════════════════════════
-with tab_map:
+if st.session_state.active_tab == "🗺️ 지도 & 등록":
     col_map_form, col_map_view = st.columns([1, 2.5], gap="large")
     
     with col_map_form:
@@ -331,6 +370,12 @@ with tab_map:
             rest_name = st.text_input("🍴 식당 이름 *", placeholder="예) 명동교자")
             category  = st.selectbox("📂 카테고리", CATEGORIES)
             address   = st.text_input("🗺️ 식당 주소 (필수)", placeholder="예) 서울 강남구 테헤란로 123 (도로명 주소 권장)")
+            
+            st.markdown("---")
+            st.markdown("💬 **빠른 리뷰 등록 (선택)**")
+            map_rating  = st.slider("⭐ 별점", min_value=1, max_value=5, value=4, format="%d점")
+            map_comment = st.text_area("📝 리뷰 코멘트", placeholder="빈칸으로 두면 리뷰 없이 식당만 등록됩니다.", height=80)
+            
             submitted = st.form_submit_button("📌 등록하기", use_container_width=True, type="primary")
 
             if submitted:
@@ -347,8 +392,13 @@ with tab_map:
                     if lat is None or lng is None:
                         st.warning("입력하신 주소의 좌표를 찾을 수 없습니다. 정확한 도로명 주소를 입력해 주세요.")
                     else:
-                        add_restaurant(rest_name.strip(), category, address.strip(), lat, lng, final_author)
-                        st.success(f"✅ **{rest_name}** 이(가) 등록되었습니다! (지도에 추가됨)")
+                        new_id = add_restaurant(rest_name.strip(), category, address.strip(), lat, lng, final_author)
+                        
+                        if map_comment.strip():
+                            add_review(new_id, final_author, map_rating, map_comment.strip())
+                            st.success(f"✅ **{rest_name}** 등록 및 리뷰가 작성되었습니다! (지도에 추가됨)")
+                        else:
+                            st.success(f"✅ **{rest_name}** 이(가) 등록되었습니다! (지도에 추가됨)")
                         st.rerun()
 
     with col_map_view:
@@ -404,7 +454,26 @@ with tab_map:
                         author_name = str(rv["author"]).replace('<', '&lt;').replace('>', '&gt;')
                         popup_html += f'<div style="margin-bottom: 6px; padding-bottom: 4px; border-bottom: 1px dashed #eee;"><b>{author_name}</b> ({rv["rating"]}점)<br>{comment}</div>'
                         
-                popup_html += '''
+                popup_html += f'''
+                    </div>
+                    <div style="margin-top: 10px; text-align: center;">
+                        <a href="#" onclick="
+                            var ref = document.referrer || (window.location.ancestorOrigins && window.location.ancestorOrigins[0]) || '/';
+                            var cleanUrl = ref.split('?')[0];
+                            if (cleanUrl.slice(-1) !== '/') cleanUrl += '/';
+                            this.href = cleanUrl + '?restaurant_id={row['id']}';
+                        " target="_top" style="
+                            display: inline-block;
+                            background-color: #FF6B35;
+                            color: white;
+                            padding: 6px 12px;
+                            border-radius: 8px;
+                            text-decoration: none;
+                            font-weight: bold;
+                            font-size: 12px;
+                            font-family: sans-serif;
+                            box-shadow: 0 2px 4px rgba(255,107,53,0.2);
+                        ">✍️ 리뷰 쓰러가기</a>
                     </div>
                 </div>
                 '''
@@ -422,7 +491,7 @@ with tab_map:
 # ═══════════════════════════════════════════════
 # TAB 1 — 맛집 목록
 # ═══════════════════════════════════════════════
-with tab1:
+if st.session_state.active_tab == "📋 맛집 목록":
     st.markdown('<div class="section-title">📋 등록된 맛집 목록</div>', unsafe_allow_html=True)
 
     # 카테고리 필터
@@ -471,11 +540,11 @@ with tab1:
 # ═══════════════════════════════════════════════
 # TAB 2 — 리뷰 & 평점
 # ═══════════════════════════════════════════════
-with tab2:
+if st.session_state.active_tab == "⭐ 리뷰 & 평점":
     df_all = get_restaurants()
 
     if df_all.empty:
-        st.info("먼저 Tab 1에서 맛집을 등록해 주세요!")
+        st.info("먼저 맛집을 등록해 주세요!")
     else:
         st.markdown('<div class="section-title">🔍 식당 선택</div>', unsafe_allow_html=True)
         st.caption("아래 표에서 리뷰를 확인하거나 작성할 식당을 **클릭(선택)**하세요. (열 제목을 눌러 정렬할 수 있습니다)")
@@ -494,12 +563,26 @@ with tab2:
             on_select="rerun"
         )
         
-        if not event.selection.rows:
-            st.info("👆 위 표에서 식당을 하나 선택해 주세요!")
-        else:
+        # 선택된 식당 ID 확인 로직 (지도 연결 우선 확인 후 클릭 이벤트 처리)
+        selected_id = None
+        if "selected_restaurant_id_from_map" in st.session_state and st.session_state.selected_restaurant_id_from_map is not None:
+            selected_id = st.session_state.selected_restaurant_id_from_map
+            
+        if event.selection.rows:
             selected_idx = event.selection.rows[0]
             selected_id  = int(df_display.iloc[selected_idx]["_id"])
+            # 유저가 직접 수동으로 선택했으므로 지도 연동 세션 정보는 초기화
+            if "selected_restaurant_id_from_map" in st.session_state:
+                st.session_state.selected_restaurant_id_from_map = None
+
+        if selected_id is None:
+            st.info("👆 위 표에서 식당을 하나 선택해 주세요!")
+        else:
             selected_row = df_all[df_all["id"] == selected_id].iloc[0]
+            
+            # 지도 연동으로 들어온 경우 안내 메시지 출력
+            if "selected_restaurant_id_from_map" in st.session_state and st.session_state.selected_restaurant_id_from_map == selected_id:
+                st.info(f"📍 지도에서 선택된 **{selected_row['name']}** 식당의 리뷰 페이지입니다. 다른 식당의 리뷰를 보려면 아래 목록에서 클릭하세요.")
             
             st.markdown(f"### 🍽️ {selected_row['name']}")
 
@@ -568,7 +651,7 @@ with tab2:
 # ═══════════════════════════════════════════════
 # TAB 3 — 오늘의 점심 룰렛
 # ═══════════════════════════════════════════════
-with tab3:
+if st.session_state.active_tab == "🎰 오늘의 점심 룰렛":
     st.markdown("### 🎰 오늘 점심 뭐 먹을지 고민된다면?")
     st.caption("카테고리를 선택하고 룰렛을 돌려보세요!")
 
