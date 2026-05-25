@@ -196,6 +196,7 @@ def get_conn():
         st.stop()
     return psycopg2.connect(db_url)
 
+@st.cache_resource
 def init_db():
     try:
         conn = get_conn()
@@ -256,8 +257,10 @@ def add_restaurant(name, category, address, lat, lng, author):
     new_id = cursor.fetchone()[0]
     conn.commit()
     conn.close()
+    st.cache_data.clear()  # 캐시 초기화
     return new_id
 
+@st.cache_data(ttl=600)
 def get_restaurants(category_filter="전체"):
     conn = get_conn()
     if category_filter == "전체":
@@ -289,7 +292,19 @@ def add_review(restaurant_id, author, rating, comment):
     )
     conn.commit()
     conn.close()
+    st.cache_data.clear()  # 캐시 초기화
 
+@st.cache_data(ttl=600)
+def get_all_reviews():
+    conn = get_conn()
+    df = pd.read_sql(
+        "SELECT * FROM reviews ORDER BY created_at DESC",
+        conn
+    )
+    conn.close()
+    return df
+
+@st.cache_data(ttl=600)
 def get_reviews(restaurant_id):
     conn = get_conn()
     df = pd.read_sql(
@@ -306,6 +321,7 @@ def delete_restaurant(restaurant_id):
     cursor.execute("DELETE FROM restaurants WHERE id=%s", (restaurant_id,))
     conn.commit()
     conn.close()
+    st.cache_data.clear()  # 캐시 초기화
 
 def stars(rating, max_stars=5):
     if pd.isna(rating):
@@ -377,6 +393,7 @@ with tab_map:
         st.caption("핀을 클릭하면 상세 리뷰를 볼 수 있습니다. (지도: Vworld)")
 
         df_map = get_restaurants()
+        df_all_reviews = get_all_reviews()  # N+1 쿼리 해결을 위해 모든 리뷰 한 번에 가져옴
         
         # 링티 회사 좌표 (고정값)
         COMPANY_LAT = 37.504944
@@ -404,7 +421,8 @@ with tab_map:
         
         for _, row in df_map.iterrows():
             if pd.notna(row['lat']) and pd.notna(row['lng']):
-                reviews = get_reviews(row['id'])
+                # 메모리 상에서 해당 맛집의 리뷰만 필터링하여 N+1 쿼리 방지
+                reviews = df_all_reviews[df_all_reviews['restaurant_id'] == row['id']]
                 avg_rating = row['avg_rating']
                 avg_str = f"⭐ {avg_rating:.1f}" if pd.notna(avg_rating) else "리뷰 없음"
                 
