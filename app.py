@@ -334,7 +334,7 @@ def stars(rating, max_stars=5):
 # ─────────────────────────────────────────────
 st.markdown("""
 <div class="app-header">
-    <h1>🍽️ 사내 맛집 지도</h1>
+    <h1>🍽️ 링피플 맛집 지도</h1>
     <p>팀원들과 함께 만들어가는 우리 오피스 주변 맛집 가이드</p>
 </div>
 """, unsafe_allow_html=True)
@@ -616,7 +616,7 @@ with tab3:
     if df_roulette.empty:
         st.info("먼저 Tab 1에서 맛집을 등록해 주세요!")
     else:
-        cat_options = ["전체"] + sorted(df_roulette["category"].unique().tolist())
+        cat_options = ["전체", "카페 제외 전체"] + sorted(df_roulette["category"].unique().tolist())
         r_col1, r_col2 = st.columns([1, 2], gap="large")
 
         with r_col1:
@@ -627,6 +627,8 @@ with tab3:
             if spin_btn:
                 if roulette_cat == "전체":
                     pool = df_roulette
+                elif roulette_cat == "카페 제외 전체":
+                    pool = df_roulette[df_roulette["category"] != "카페"]
                 else:
                     pool = df_roulette[df_roulette["category"] == roulette_cat]
 
@@ -660,6 +662,8 @@ with tab3:
         with st.expander(f"📋 '{roulette_cat}' 후보 식당 목록 보기"):
             if roulette_cat == "전체":
                 pool_view = df_roulette
+            elif roulette_cat == "카페 제외 전체":
+                pool_view = df_roulette[df_roulette["category"] != "카페"]
             else:
                 pool_view = df_roulette[df_roulette["category"] == roulette_cat]
 
